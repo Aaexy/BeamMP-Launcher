@@ -1,0 +1,80 @@
+# This fork only: builds the Windows launcher exactly like cmake-windows.yml, then (when asked) publishes it as a
+# GitHub release with its SHA-256, which the Aaexy/BeamNG.Earth fork downloads and checks before using it.
+name: Fork release (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v2.8.1-fastsync.1"
+        required: true
+        default: "v2.8.1-fastsync.1"
+      publish:
+        description: "Publish the release (otherwise only build it)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+
+      - name: Restore artifacts, or run vcpkg, build and cache artifacts
+        uses: lukka/run-vcpkg@v7
+        with:
+          vcpkgArguments: 'discord-rpc zlib nlohmann-json openssl cpp-httplib[openssl]'
+          vcpkgDirectory: '${{ runner.workspace }}/b/vcpkg'
+          vcpkgGitCommitId: 'b5d1a94fb7f88fd835e360fd23a45a09ceedbf48'
+          vcpkgTriplet: 'x64-windows-static'
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -E make_directory build-windows
+          cd build-windows
+          cmake "$GITHUB_WORKSPACE" -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE='${{ runner.workspace }}/b/vcpkg/scripts/buildsystems/vcpkg.cmake' -DVCPKG_TARGET_TRIPLET=x64-windows-static
+
+      - name: Build
+        shell: bash
+        run: cmake --build build-windows --config $BUILD_TYPE
+
+      - name: Checksum
+        shell: bash
+        run: |
+          mkdir out
+          cp build-windows/Release/BeamMP-Launcher.exe out/
+          cd out
+          sha256sum BeamMP-Launcher.exe | awk '{print $1 "  BeamMP-Launcher.exe"}' > BeamMP-Launcher.exe.sha256
+          cat BeamMP-Launcher.exe.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BeamMP-Launcher-windows
+          path: out/*
+
+      - name: Publish ${{ inputs.tag }}
+        if: ${{ inputs.publish }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          > **This is a fork** of [BeamMP/BeamMP-Launcher](https://github.com/BeamMP/BeamMP-Launcher), used by the [Aaexy/BeamNG.Earth](https://github.com/Aaexy/BeamNG.Earth) fork.
+
+          The official launcher plus the faster sync of cached mods proposed in [BeamMP/BeamMP-Launcher#279](https://github.com/BeamMP/BeamMP-Launcher/issues/279) by [awagoner2019](https://github.com/awagoner2019):
+          - cached mods are hardlinked into the game's mods folder instead of copied on every join;
+          - their SHA-256 is remembered instead of re-read on every join.
+
+          Built by GitHub Actions from commit ${GITHUB_SHA} of this repository (AGPL-3.0, source here). When BeamMP publishes a newer launcher, this one updates itself to the official one.
+          EOF
+          gh release create "${{ inputs.tag }}" out/BeamMP-Launcher.exe out/BeamMP-Launcher.exe.sha256 \
+            --target "$GITHUB_SHA" --title "BeamMP Launcher ${{ inputs.tag }} (fork, faster cached sync)" --notes-file notes.md
